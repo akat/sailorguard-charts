@@ -1,0 +1,15 @@
+# One-shot job that builds depth tiles from EMODnet straight into the
+# `sailorguard-charts-data` volume (see portainer-stack.yml).
+FROM node:22-alpine
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY generator ./generator
+
+# Areas from generator/regions.json, space separated, or west,south,east,north.
+ENV AREAS="mediterranean black-sea" \
+    CONCURRENCY=3
+
+# Writes to /app/public, which is the data volume.
+CMD ["sh", "generator/run.sh"]

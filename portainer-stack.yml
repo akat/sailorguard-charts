@@ -1,8 +1,18 @@
 version: "3.8"
 
 # Production stack for https://charts.sailorguard.com behind the shared Traefik
-# (network "proxy", Let's Encrypt resolver "le"). Tiles and manifest are in the
-# `charts-data` volume; upload them with scripts/upload.sh.
+# (network "proxy", Let's Encrypt resolver "le").
+#
+#   sailorguard-charts            nginx, serves tiles + manifest from the volume
+#   sailorguard-charts-generator  one-shot job: builds tiles from EMODnet into the
+#                                 volume, then exits. Runs on every deploy/redeploy;
+#                                 tiles already built are skipped.
+#
+# Stack variables (all optional):
+#   CHART_AREAS        areas to build, space separated (generator/regions.json):
+#                      mediterranean black-sea atlantic-iberia biscay-channel
+#                      british-isles north-sea baltic norway
+#   CHART_CONCURRENCY  parallel EMODnet requests (default 3)
 
 services:
   sailorguard-charts:
@@ -21,6 +31,16 @@ services:
       - "traefik.http.services.sailorguard-charts.loadbalancer.server.port=8080"
     networks:
       - proxy
+
+  sailorguard-charts-generator:
+    image: ${GENERATOR_IMAGE:-ghcr.io/akat/sailorguard-charts-generator:latest}
+    pull_policy: always
+    restart: "no"
+    environment:
+      AREAS: ${CHART_AREAS:-mediterranean black-sea}
+      CONCURRENCY: ${CHART_CONCURRENCY:-3}
+    volumes:
+      - charts-data:/app/public
 
 volumes:
   charts-data:

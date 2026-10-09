@@ -1,8 +1,10 @@
-name: Build and publish image
+name: Build and publish images
 
 # A merge to main (i.e. a push to main) runs the tests, then builds and pushes
-# ghcr.io/<owner>/<repo>:latest and :sha-<commit>. Watchtower on the server
-# picks up :latest. Pull requests only run the tests and a build check.
+# two images, tagged :latest and :sha-<commit>:
+#   ghcr.io/<owner>/<repo>            nginx serving the charts
+#   ghcr.io/<owner>/<repo>-generator  one-shot tile generator
+# Pull requests only run the tests and a build check.
 
 on:
   push:
@@ -45,6 +47,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            suffix: ""
+          - dockerfile: Dockerfile.generator
+            suffix: "-generator"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -64,7 +73,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
@@ -73,9 +82,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}

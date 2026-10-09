@@ -36,17 +36,26 @@ npm run build:manifest
 
 To add a region, add an entry to `regions` and run `build:manifest` again. To cover new waters, build the area that contains them first.
 
-## Deploy
+## Deploy (Portainer)
 
-1. Push to GitHub. The workflow runs the tests and publishes the nginx image to `ghcr.io/<owner>/sailorguard-charts`.
+The stack has two services that share the `sailorguard-charts-data` volume:
+
+- `sailorguard-charts` is the nginx server behind Traefik.
+- `sailorguard-charts-generator` builds the tiles from EMODnet straight into the volume, writes the manifest, and exits.
+
+The generator runs again on every deploy or redeploy. Tiles that are already built are skipped, so a redeploy only fetches what is new.
+
+1. Push to GitHub. The workflow publishes two images: `ghcr.io/<owner>/sailorguard-charts` and `ghcr.io/<owner>/sailorguard-charts-generator`.
 2. Point the DNS record `charts.sailorguard.com` at the Traefik host.
-3. In Portainer, create a stack from [portainer-stack.yml](portainer-stack.yml). Traefik serves it on `websecure` with the `le` certificate resolver.
-4. Upload the data: `SSH_HOST=user@server scripts/upload.sh`. You can also set `SSH_HOST` in `.env` (see `.env.example`).
-   - The script streams `public/` into the `sailorguard-charts-data` volume.
-   - It uploads the tiles first and the manifest last.
-5. Check the deployment: `curl https://charts.sailorguard.com/v1/manifest.json`.
+3. In Portainer, create a stack from [portainer-stack.yml](portainer-stack.yml). You can set two optional stack variables:
+   - `CHART_AREAS`: which areas to build (default `mediterranean black-sea`).
+   - `CHART_CONCURRENCY`: how many tiles to fetch at once (default 3).
+4. Follow the generator's container logs. When it is done, the log ends with `Charts are up to date.`
+5. Check the result: `curl https://charts.sailorguard.com/v1/manifest.json`.
 
-**Caching.** Tiles are sent with `Cache-Control: immutable`. The manifest is sent with `no-cache`, so the app sees new tiles and regions immediately.
+To add waters later, extend `CHART_AREAS` (for example `mediterranean black-sea atlantic-iberia`) and redeploy the stack.
+
+`scripts/upload.sh` is an optional alternative: it uploads data built on another machine into the same volume.
 
 ## Tests
 
