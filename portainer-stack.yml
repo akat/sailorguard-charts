@@ -1,0 +1,31 @@
+version: "3.8"
+
+# Production stack for https://charts.sailorguard.com behind the shared Traefik
+# (network "proxy", Let's Encrypt resolver "le"). Tiles and manifest are in the
+# `charts-data` volume; upload them with scripts/upload.sh.
+
+services:
+  sailorguard-charts:
+    image: ${IMAGE:-ghcr.io/akat/sailorguard-charts:latest}
+    pull_policy: always
+    restart: unless-stopped
+    volumes:
+      - charts-data:/usr/share/nginx/html:ro
+    labels:
+      - "traefik.enable=true"
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.sailorguard-charts.rule=Host(`charts.sailorguard.com`)"
+      - "traefik.http.routers.sailorguard-charts.entrypoints=websecure"
+      - "traefik.http.routers.sailorguard-charts.tls.certresolver=le"
+      - "traefik.http.services.sailorguard-charts.loadbalancer.server.port=8080"
+    networks:
+      - proxy
+
+volumes:
+  charts-data:
+    name: sailorguard-charts-data
+
+networks:
+  proxy:
+    external: true

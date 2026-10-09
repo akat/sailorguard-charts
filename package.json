@@ -1,0 +1,20 @@
+{
+  "name": "sailorguard-charts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline depth charts for the SailorGuard app (charts.sailorguard.com): tile generator and static file service.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:tiles": "node generator/build-tiles.mjs",
+    "build:manifest": "node generator/build-manifest.mjs",
+    "test": "node --test generator/*.test.mjs"
+  },
+  "author": "Angelos Katsaris",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "geotiff": "^3.0.5"
+  }
+}
