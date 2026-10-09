@@ -3,7 +3,7 @@
 Offline depth charts for the SailorGuard app, served from
 **https://charts.sailorguard.com**. The app downloads the regions the user
 picks into a local SQLite database and draws depth soundings from it, with no
-further requests. The app itself stays small.
+further requests. The app itself stays small!
 
 ## Data
 
