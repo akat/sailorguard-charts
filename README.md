@@ -12,11 +12,17 @@ further requests. The app itself stays small!
 - **Cells.** Each tile has 240 × 240 cells (about 460 m × 360 m each). A cell covers 4 × 4 EMODnet samples (about 115 m apart).
 - **What a cell holds.** A cell stores its **shallowest** sample and which of the 16 samples that was. The app places each sounding at that sample's real position, so soundings are accurate to about 115 m, and shoals are never averaged away.
 - **File format.** The format is defined in [generator/tile-format.mjs](generator/tile-format.mjs) and mirrored in the app (`src/services/depthGrid.ts`).
+- **Contours.** Each tile also has a contour file (`.sgc`) with isobaths at 2, 5, 10, 20, 50, 100 and 200 m, and depth areas (water ≤ 2, 5, 10 and 20 m) for the chart's blue bands.
+  - The contours are computed with marching squares (`d3-contour`) on the native ~115 m grid, then simplified.
+  - Each file holds two levels of detail: coarse for zoomed-out views, fine for close-up views.
+  - A contour file is about 180 KB, or about 125 KB over HTTP with gzip.
+  - The format is defined in [generator/contour-format.mjs](generator/contour-format.mjs) and mirrored in the app (`src/services/contourTile.ts`).
 
 ```
 public/v1/
-  manifest.json                       regions, tile sizes and sha256
-  tiles/emodnet-2024/N37E023.sgd      tiles (immutable; a new dataset gets a new folder)
+  manifest.json                       regions, tile sizes and sha256 (depths and contours)
+  tiles/emodnet-2024/N37E023.sgd      depth tiles (immutable; a new dataset gets a new folder)
+  tiles/emodnet-2024/N37E023.sgc      contour tiles
 ```
 
 ## Build data
@@ -31,7 +37,7 @@ npm run build:manifest
 
 - **Requests.** The build makes one EMODnet WCS request per tile.
 - **Duration.** It is slow: about an hour for the Mediterranean and the Black Sea.
-- **Resuming.** It can be stopped and restarted. Tiles already on disk, and tiles known to be land only, are skipped.
+- **Resuming.** It can be stopped and restarted. Tiles that already have both a depth file and a contour file, and tiles known to be land only, are skipped. A tile built before contours existed is read again once, to add its contours.
 - **Areas.** The `areas` in `regions.json` are what to build. The `regions` are the named regions shown in the app. A region lists every built tile its bounding box touches.
 
 To add a region, add an entry to `regions` and run `build:manifest` again. To cover new waters, build the area that contains them first.

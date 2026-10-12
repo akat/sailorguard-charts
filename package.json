@@ -15,6 +15,7 @@
   "author": "Angelos Katsaris",
   "license": "UNLICENSED",
   "dependencies": {
+    "d3-contour": "^4.0.2",
     "geotiff": "^3.0.5"
   }
 }
