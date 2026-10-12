@@ -59,6 +59,35 @@ export function simplify(points, tolerance) {
   return points.filter((_, i) => keep[i]);
 }
 
+/**
+ * Chaikin corner cutting: each pass replaces every corner with two points at
+ * 1/4 and 3/4 of its segments, turning the grid's angles into smooth curves.
+ * Open lines keep their end points; closed rings (first point repeated at the
+ * end) stay closed.
+ */
+export function chaikin(points, iterations, closed) {
+  let out = points;
+  for (let n = 0; n < iterations && out.length > 2; n += 1) {
+    const next = [];
+    const count = closed ? out.length - 1 : out.length - 1;
+    if (!closed) {
+      next.push(out[0]);
+    }
+    for (let i = 0; i < count; i += 1) {
+      const [ax, ay] = out[i];
+      const [bx, by] = out[i + 1];
+      next.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by], [0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    if (closed) {
+      next.push(next[0]);
+    } else {
+      next.push(out[out.length - 1]);
+    }
+    out = next;
+  }
+  return out;
+}
+
 /** Simplify a closed ring (first point repeated at the end). */
 function simplifyRing(ring, tolerance) {
   // Split in two halves so the closing point is kept and the shape stays closed.
@@ -117,10 +146,20 @@ function polylineLength(points) {
 
 /**
  * @param {Float32Array} native elevation grid, row 0 = north, NaN = no data
- * @param {{tolerance: number, minArea: number, minLength: number}} detail in grid units
+ * @param {{tolerance: number, minArea: number, minLength: number, smooth?: number, smoothTolerance?: number}} detail
+ *        in grid units. `smooth` = Chaikin passes after simplification (0 = angular);
+ *        `smoothTolerance` then drops the near-collinear points the passes add,
+ *        keeping the curves at a fraction of the size.
  * @returns {{lines: {depth, points}[], areas: {depth, rings}[]}}
  */
-export function buildContours(native, {tolerance, minArea, minLength}) {
+export function buildContours(native, {tolerance, minArea, minLength, smooth = 0, smoothTolerance = 0}) {
+  const smoothLine = (points, closed) => {
+    const curved = chaikin(points, smooth, closed);
+    if (!smooth || !smoothTolerance) {
+      return curved;
+    }
+    return closed ? simplifyRing(curved, smoothTolerance) : simplify(curved, smoothTolerance);
+  };
   const depth = new Float64Array(N * N);
   const shallow = new Float64Array(N * N);
   for (let i = 0; i < N * N; i += 1) {
@@ -135,9 +174,10 @@ export function buildContours(native, {tolerance, minArea, minLength}) {
     for (const polygon of geometry.coordinates) {
       for (const ring of polygon) {
         for (const line of ringToLines(ring)) {
+          const closed = line.length > 3 && line[0][0] === line.at(-1)[0] && line[0][1] === line.at(-1)[1];
           const points = simplify(line, tolerance);
           if (points.length > 1 && polylineLength(points) >= minLength) {
-            lines.push({depth: geometry.value, points});
+            lines.push({depth: geometry.value, points: smoothLine(points, closed)});
           }
         }
       }
@@ -153,7 +193,8 @@ export function buildContours(native, {tolerance, minArea, minLength}) {
       }
       const rings = [outer, ...holes.filter(hole => ringArea(hole) >= minArea)]
         .map(ring => simplifyRing(ring, tolerance))
-        .filter(ring => ring.length >= 4);
+        .filter(ring => ring.length >= 4)
+        .map(ring => smoothLine(ring, true));
       if (rings.length && rings[0].length >= 4) {
         areas.push({depth: -geometry.value, rings});
       }

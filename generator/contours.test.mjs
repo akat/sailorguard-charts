@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NATIVE_PER_DEGREE as N} from './tile-format.mjs';
-import {buildContours, simplify} from './contours.mjs';
+import {buildContours, chaikin, simplify} from './contours.mjs';
 import {decodeContours, encodeContours} from './contour-format.mjs';
 
 const DETAIL = {tolerance: 0.15, minArea: 1, minLength: 2};
@@ -81,4 +81,24 @@ test('contour tiles round-trip within ~7 m', () => {
   const [x, y] = fine.lines[0].points[3];
   const [dx, dy] = decoded.levels[1].lines[0].points[3];
   assert.ok(Math.hypot(x - dx, y - dy) <= 1 / 16, 'quantised to 1/16 grid unit');
+});
+
+test('chaikin rounds corners and keeps rings closed and lines anchored', () => {
+  const square = [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]];
+  const round = chaikin(square, 2, true);
+  assert.deepEqual(round[0], round.at(-1), 'ring stays closed');
+  assert.ok(!round.some(([x, y]) => (x === 0 || x === 4) && (y === 0 || y === 4)), 'no sharp corner left');
+  const line = chaikin([[0, 0], [4, 0], [4, 4]], 2, false);
+  assert.deepEqual(line[0], [0, 0]);
+  assert.deepEqual(line.at(-1), [4, 4]);
+});
+
+test('smoothed isobaths stay on their depth', () => {
+  const {lines} = buildContours(bowl, {...DETAIL, smooth: 2, smoothTolerance: 0.1});
+  for (const line of lines) {
+    const expected = 300 - line.depth * 10;
+    for (const [x, y] of line.points) {
+      assert.ok(Math.abs(Math.hypot(x - N / 2, y - N / 2) - expected) < 2);
+    }
+  }
 });

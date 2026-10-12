@@ -16,6 +16,8 @@
   "license": "UNLICENSED",
   "dependencies": {
     "d3-contour": "^4.0.2",
-    "geotiff": "^3.0.5"
+    "geotiff": "^3.0.5",
+    "polyclip-ts": "^0.16.8",
+    "shapefile": "^0.6.6"
   }
 }

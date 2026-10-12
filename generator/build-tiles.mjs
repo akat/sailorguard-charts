@@ -14,11 +14,18 @@ import {encodeTile, reduceTile, tileKey} from './tile-format.mjs';
 import {readNative} from './emodnet.mjs';
 import {buildContours} from './contours.mjs';
 import {encodeContours} from './contour-format.mjs';
+import {applyLandMask, clipAreas, clipLines, ensureLandIndex, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
+import {execFileSync} from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = JSON.parse(readFileSync(join(ROOT, 'generator', 'regions.json'), 'utf8'));
 const TILE_DIR = join(ROOT, 'public', 'v1', 'tiles', CONFIG.dataset.id);
 const EMPTY_FILE = join(ROOT, 'public', 'v1', 'land-tiles.json');
+// Per-tile build version: tiles built by an older pipeline are rebuilt.
+const BUILT_FILE = join(ROOT, 'public', 'v1', 'built-tiles.json');
+const BUILD_VERSION = 'osm-coast-smooth-2';
+// Downloads (OSM land polygons) and indexes; not served (nginx only serves /v1).
+const CACHE_DIR = join(ROOT, 'public', '.cache');
 const PAUSE_MS = 500; // be gentle with the EMODnet server
 // Parallel WCS requests (CONCURRENCY=1 for the gentlest run).
 const CONCURRENCY = Math.max(1, Number(process.env.CONCURRENCY) || 3);
@@ -27,11 +34,38 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Contour detail, in tile grid units (1/960° ≈ 115 m): coarse for zoomed-out
 // views, fine when zoomed in.
+// Both are rounded with two Chaikin passes, then thinned to ~12 m (fine) and
+// ~45 m (coarse), which keeps the curves for about 17% more data.
 const CONTOUR_LEVELS = [
-  {tolerance: 1.0, minArea: 16, minLength: 8},
-  {tolerance: 0.15, minArea: 1, minLength: 2}
+  {tolerance: 1.0, minArea: 16, minLength: 8, smooth: 2, smoothTolerance: 0.4},
+  {tolerance: 0.15, minArea: 1, minLength: 2, smooth: 2, smoothTolerance: 0.1}
 ];
-const isBuilt = key => existsSync(join(TILE_DIR, `${key}.sgd`)) && existsSync(join(TILE_DIR, `${key}.sgc`));
+const built = existsSync(BUILT_FILE) ? JSON.parse(readFileSync(BUILT_FILE, 'utf8')) : {};
+const isBuilt = key =>
+  built[key] === BUILD_VERSION && existsSync(join(TILE_DIR, `${key}.sgd`)) && existsSync(join(TILE_DIR, `${key}.sgc`));
+
+/** Download and unzip the OSM land polygons once (~930 MB). */
+async function ensureLandPolygons() {
+  const paths = landPaths(CACHE_DIR);
+  if (existsSync(paths.shp)) {
+    return;
+  }
+  mkdirSync(CACHE_DIR, {recursive: true});
+  if (!existsSync(paths.zip)) {
+    console.log(`Downloading ${paths.url} (~930 MB, once)…`);
+    const response = await fetch(paths.url);
+    if (!response.ok) {
+      throw new Error(`Land polygons download failed: ${response.status}`);
+    }
+    const {createWriteStream, renameSync} = await import('node:fs');
+    const {Readable} = await import('node:stream');
+    const {pipeline} = await import('node:stream/promises');
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(`${paths.zip}.part`));
+    renameSync(`${paths.zip}.part`, paths.zip);
+  }
+  console.log('Unzipping land polygons…');
+  execFileSync('unzip', ['-o', '-q', paths.zip, '-d', CACHE_DIR]);
+}
 
 function parseAreas(args) {
   if (!args.length) {
@@ -50,6 +84,9 @@ function parseAreas(args) {
 }
 
 const areas = parseAreas(process.argv.slice(2));
+await ensureLandPolygons();
+// Index all configured areas, so building another area later reuses the index.
+await ensureLandIndex(CACHE_DIR, Object.values(CONFIG.areas));
 mkdirSync(TILE_DIR, {recursive: true});
 const landTiles = new Set(existsSync(EMPTY_FILE) ? JSON.parse(readFileSync(EMPTY_FILE, 'utf8')) : []);
 
@@ -75,11 +112,29 @@ async function worker() {
     const {key, lat, lon} = todo[next];
     next += 1;
     const native = await readNative(lat, lon);
+    // Real coastline: EMODnet samples on OSM land become land (no soundings there).
+    const land = loadLand(CACHE_DIR, lat, lon);
+    if (land.length) {
+      applyLandMask(native, rasterize(land));
+    }
     const values = reduceTile(native);
     if (values) {
       writeFileSync(join(TILE_DIR, `${key}.sgd`), encodeTile(lat + 1, lon, values));
-      const levels = CONTOUR_LEVELS.map(detail => buildContours(native, detail));
+      const fineMask = land.length ? rasterize(land, LINE_MASK) : null;
+      const levels = CONTOUR_LEVELS.map(detail => {
+        const contours = buildContours(native, detail);
+        if (!fineMask) {
+          return contours;
+        }
+        // Cut what still crosses real land (the grid is ~115 m; the coast is not).
+        return {
+          lines: clipLines(contours.lines, fineMask, detail.smoothTolerance || detail.tolerance),
+          areas: clipAreas(contours.areas, land)
+        };
+      });
       writeFileSync(join(TILE_DIR, `${key}.sgc`), encodeContours(lat + 1, lon, levels));
+      built[key] = BUILD_VERSION;
+      writeFileSync(BUILT_FILE, JSON.stringify(built));
       written += 1;
     } else {
       landTiles.add(key);
