@@ -15,7 +15,7 @@ import {encodeTile, reduceTile, tileKey} from './tile-format.mjs';
 import {readNative} from './emodnet.mjs';
 import {buildContours} from './contours.mjs';
 import {encodeContours} from './contour-format.mjs';
-import {applyLandMask, clipAreas, clipLines, ensureLandIndex, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
+import {applyLandMask, clipAreas, clipLines, ensureLandIndex, fillCoastalGaps, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
 import {execFileSync} from 'node:child_process';
 import {buildDir} from './build-info.mjs';
 
@@ -120,22 +120,27 @@ async function worker() {
     const native = await readNative(lat, lon);
     // Real coastline: EMODnet samples on OSM land become land (no soundings there).
     const land = loadLand(CACHE_DIR, lat, lon);
-    if (land.length) {
-      applyLandMask(native, rasterize(land));
+    const landMask = land.length ? rasterize(land) : null;
+    if (landMask) {
+      applyLandMask(native, landMask);
     }
     const values = reduceTile(native);
     if (values) {
       writeAtomic(join(TILE_DIR, `${key}.sgd`), encodeTile(lat + 1, lon, values));
       const fineMask = land.length ? rasterize(land, LINE_MASK) : null;
+      // Where EMODnet misplaces the coast, contours use depths interpolated
+      // from the real coast (soundings above keep EMODnet's own values).
+      const contourGrid = landMask ? fillCoastalGaps(native, landMask) : native;
       const levels = CONTOUR_LEVELS.map(detail => {
-        const contours = buildContours(native, detail);
+        const contours = buildContours(contourGrid, detail);
         if (!fineMask) {
           return contours;
         }
         // Cut what still crosses real land (the grid is ~115 m; the coast is not).
+        const tolerance = detail.smoothTolerance || detail.tolerance;
         return {
-          lines: clipLines(contours.lines, fineMask, detail.smoothTolerance || detail.tolerance),
-          areas: clipAreas(contours.areas, land)
+          lines: clipLines(contours.lines, fineMask, tolerance),
+          areas: clipAreas(contours.areas, land, tolerance)
         };
       });
       writeAtomic(join(TILE_DIR, `${key}.sgc`), encodeContours(lat + 1, lon, levels));

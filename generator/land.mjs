@@ -169,6 +169,105 @@ export function applyLandMask(native, landMask) {
   }
 }
 
+/** Grid distance (4-neighbour steps, capped at `limit + 1`) to the nearest source cell. */
+function distanceTo(isSource, limit) {
+  const far = limit + 1;
+  const dist = new Uint8Array(N * N).fill(far);
+  let frontier = [];
+  for (let i = 0; i < N * N; i += 1) {
+    if (isSource(i)) {
+      dist[i] = 0;
+      frontier.push(i);
+    }
+  }
+  for (let d = 1; d <= limit && frontier.length; d += 1) {
+    const next = [];
+    for (const i of frontier) {
+      const x = i % N;
+      for (const j of [i - N, i + N, x > 0 ? i - 1 : -1, x < N - 1 ? i + 1 : -1]) {
+        if (j >= 0 && j < N * N && dist[j] === far) {
+          dist[j] = d;
+          next.push(j);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return dist;
+}
+
+/**
+ * Depths for the coastal cells EMODnet gets wrong, for contours only.
+ *
+ * Where EMODnet says land (or has no data) but OSM shows sea, EMODnet has
+ * drawn the coast or an islet in the wrong place, and isobaths would ring that
+ * phantom land instead of the real one. Those cells get a depth by harmonic
+ * interpolation (Laplace): 0 m along the real (OSM) coast, rising smoothly to
+ * the EMODnet depths around them, so the isobaths follow the real coastline.
+ * Only cells within `maxDistance` samples of both EMODnet water and real land
+ * are filled. Returns a new grid; `native` (and so the soundings) is unchanged.
+ *
+ * @param native elevation grid, after applyLandMask
+ * @param landMask OSM land at native resolution (rasterize(land))
+ */
+export function fillCoastalGaps(native, landMask, maxDistance = 8) {
+  const isWater = i => native[i] < 0;
+  const isGap = i => !landMask[i] && !(native[i] < 0);
+  const nearWater = distanceTo(isWater, maxDistance);
+  const nearLand = distanceTo(i => landMask[i] === 1, maxDistance);
+  const gaps = [];
+  for (let i = 0; i < N * N; i += 1) {
+    if (isGap(i) && nearWater[i] <= maxDistance && nearLand[i] <= maxDistance) {
+      gaps.push(i);
+    }
+  }
+  const filled = Float32Array.from(native);
+  if (!gaps.length) {
+    return filled;
+  }
+  // Depth (m, positive) per cell; NaN = not part of the problem (ignored).
+  const depth = new Float64Array(N * N).fill(Number.NaN);
+  for (let i = 0; i < N * N; i += 1) {
+    if (isWater(i)) {
+      depth[i] = -native[i];
+    } else if (landMask[i]) {
+      depth[i] = 0;
+    }
+  }
+  gaps.forEach(i => {
+    depth[i] = 0;
+  });
+  // Successive over-relaxation on the gap cells; boundary values stay fixed.
+  const OMEGA = 1.8;
+  for (let iteration = 0; iteration < 2000; iteration += 1) {
+    let change = 0;
+    for (const i of gaps) {
+      const x = i % N;
+      let sum = 0;
+      let count = 0;
+      for (const j of [i - N, i + N, x > 0 ? i - 1 : -1, x < N - 1 ? i + 1 : -1]) {
+        if (j >= 0 && j < N * N && !Number.isNaN(depth[j])) {
+          sum += depth[j];
+          count += 1;
+        }
+      }
+      if (count) {
+        const next = depth[i] + OMEGA * (sum / count - depth[i]);
+        change = Math.max(change, Math.abs(next - depth[i]));
+        depth[i] = next;
+      }
+    }
+    if (change < 0.01) {
+      break;
+    }
+  }
+  for (const i of gaps) {
+    // Stay water even right at the coast (elevation must be below 0).
+    filled[i] = -Math.max(depth[i], 0.05);
+  }
+  return filled;
+}
+
 /** Cut lines where they cross land, using a fine land mask (LINE_MASK_SCALE). */
 export function clipLines(lines, fineMask, tolerance) {
   const size = N * LINE_MASK_SCALE;
@@ -227,13 +326,28 @@ function ringBox(ring) {
 
 const boxesMeet = (a, b) => a.w <= b.e && a.e >= b.w && a.s <= b.n && a.n >= b.s;
 
+/** Simplify closed rings, keeping the closing point. */
+function simplifyRing(ring, tolerance) {
+  const mid = Math.floor(ring.length / 2);
+  return simplify(ring.slice(0, mid + 1), tolerance).concat(simplify(ring.slice(mid), tolerance).slice(1));
+}
+
 /**
  * Subtract land from depth areas; one area may split into several. Areas of
  * one depth never overlap, so all those touching land are clipped together in
  * a single polygon operation per depth (one per area is ~50x slower).
+ * The coastline is first simplified to `tolerance` (the level's detail), so
+ * the areas do not carry every OSM coast vertex.
  */
-export function clipAreas(areas, land) {
-  const landBoxes = land.map(polygon => ({polygon, box: ringBox(polygon[0])}));
+export function clipAreas(areas, land, tolerance = 0) {
+  const simplified = !tolerance
+    ? land
+    : land
+        .map(polygon => polygon.map(ring => simplifyRing(ring, tolerance)))
+        // An islet smaller than the tolerance collapses: drop it, holes and all.
+        .filter(([outer]) => outer.length >= 4)
+        .map(([outer, ...holes]) => [outer, ...holes.filter(hole => hole.length >= 4)]);
+  const landBoxes = simplified.map(polygon => ({polygon, box: ringBox(polygon[0])}));
   const out = [];
   const byDepth = new Map();
   for (const area of areas) {

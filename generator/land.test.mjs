@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NATIVE_PER_DEGREE as N} from './tile-format.mjs';
-import {applyLandMask, clipAreas, clipLines, LINE_MASK, rasterize} from './land.mjs';
+import {applyLandMask, clipAreas, clipLines, fillCoastalGaps, LINE_MASK, rasterize} from './land.mjs';
 
 // A square island, grid units 100..200 on both axes.
 const island = [[[100, 100], [200, 100], [200, 200], [100, 200], [100, 100]]];
@@ -60,4 +60,24 @@ test('depth areas lose the part on real land', () => {
 test('areas away from land are left untouched', () => {
   const area = {depth: 2, rings: [[[300, 300], [320, 300], [320, 320], [300, 320], [300, 300]]]};
   assert.deepEqual(clipAreas([area], [island]), [area]);
+});
+
+test('coastal cells EMODnet wrongly marks as land get depths from the real coast', () => {
+  // Sea 10 m deep; the real islet is 100..106, EMODnet draws it at 103..112 (shifted, bigger).
+  const native = new Float32Array(N * N).fill(-10);
+  for (let y = 103; y < 112; y += 1) {
+    native.fill(5, y * N + 103, y * N + 112);
+  }
+  const realIslet = [[[100, 100], [106, 100], [106, 106], [100, 106], [100, 100]]];
+  const mask = rasterize([realIslet]);
+  applyLandMask(native, mask);
+  const filled = fillCoastalGaps(native, mask);
+  const depth = (x, y) => -filled[y * N + x];
+  assert.equal(native[108 * N + 108], 5, 'soundings grid unchanged');
+  assert.ok(filled[103 * N + 103] > 0, 'real land stays land');
+  const nearCoast = depth(106, 106);
+  const farther = depth(108, 108);
+  assert.ok(nearCoast > 0 && nearCoast < farther && farther < 10, `depth rises away from the real coast (${nearCoast}, ${farther})`);
+  assert.ok(filled[111 * N + 111] > 0, 'beyond 8 samples from the real coast nothing is invented');
+  assert.equal(depth(300, 300), 10, 'open sea unchanged');
 });
