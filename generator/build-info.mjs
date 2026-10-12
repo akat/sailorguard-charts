@@ -7,7 +7,7 @@
 import {join} from 'node:path';
 
 // Bump when the generated data changes: the next run builds every tile again.
-export const BUILD_VERSION = 'osm-coast-fill-1';
+export const BUILD_VERSION = 'osm-coast-fill-3';
 
 /** Folder of the dataset, holding one subfolder per build version. */
 export const datasetDir = (root, dataset) => join(root, 'public', 'v1', 'tiles', dataset.id);

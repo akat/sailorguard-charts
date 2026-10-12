@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NATIVE_PER_DEGREE as N} from './tile-format.mjs';
-import {applyLandMask, clipAreas, clipLines, fillCoastalGaps, LINE_MASK, rasterize} from './land.mjs';
+import {applyLandMask, clipAreas, clipLines, dilate, fillCoastalGaps, LINE_MASK, rasterize} from './land.mjs';
 
 // A square island, grid units 100..200 on both axes.
 const island = [[[100, 100], [200, 100], [200, 200], [100, 200], [100, 100]]];
@@ -80,4 +80,32 @@ test('coastal cells EMODnet wrongly marks as land get depths from the real coast
   assert.ok(nearCoast > 0 && nearCoast < farther && farther < 10, `depth rises away from the real coast (${nearCoast}, ${farther})`);
   assert.ok(filled[111 * N + 111] > 0, 'beyond 8 samples from the real coast nothing is invented');
   assert.equal(depth(300, 300), 10, 'open sea unchanged');
+});
+
+test('simplified isobaths do not cut corners over land', () => {
+  // A line hugging the island's north-east corner, 0.05 units off the coast.
+  const fineMask = rasterize([island], LINE_MASK);
+  const points = [];
+  for (let x = 150; x <= 200.05; x += 0.5) points.push([x, 99.95]);
+  for (let y = 99.95; y <= 150; y += 0.5) points.push([200.05, y]);
+  const [line] = clipLines([{depth: 2, points}], fineMask, 2);
+  for (let i = 1; i < line.points.length; i += 1) {
+    const [a, b] = [line.points[i - 1], line.points[i]];
+    for (let k = 0; k <= 20; k += 1) {
+      const x = a[0] + ((b[0] - a[0]) * k) / 20;
+      const y = a[1] + ((b[1] - a[1]) * k) / 20;
+      assert.ok(!(x > 100.2 && x < 199.8 && y > 100.2 && y < 199.8), `segment over land at ${x},${y}`);
+    }
+  }
+});
+
+test('isobaths stop short of a grown coast and leave no stubs', () => {
+  const fineMask = dilate(rasterize([island], LINE_MASK), 2);
+  const line = {depth: 10, points: [[50, 150], [250, 150]]};
+  const [west, east] = clipLines([line], fineMask, 0.05);
+  assert.ok(Math.max(...west.points.map(p => p[0])) < 99.8, 'stops ~2 fine cells before the coast');
+  assert.ok(Math.min(...east.points.map(p => p[0])) > 200.2);
+  // A line that only grazes the island leaves pieces shorter than minPiece: dropped.
+  const graze = {depth: 2, points: [[99.6, 120], [99.6, 120.3], [100.5, 121], [99.6, 121.3]]};
+  assert.deepEqual(clipLines([graze], fineMask, 0.05), []);
 });

@@ -15,7 +15,7 @@ import {encodeTile, reduceTile, tileKey} from './tile-format.mjs';
 import {readNative} from './emodnet.mjs';
 import {buildContours} from './contours.mjs';
 import {encodeContours} from './contour-format.mjs';
-import {applyLandMask, clipAreas, clipLines, ensureLandIndex, fillCoastalGaps, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
+import {applyLandMask, clipAreas, clipLines, dilate, ensureLandIndex, fillCoastalGaps, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
 import {execFileSync} from 'node:child_process';
 import {buildDir} from './build-info.mjs';
 
@@ -127,7 +127,8 @@ async function worker() {
     const values = reduceTile(native);
     if (values) {
       writeAtomic(join(TILE_DIR, `${key}.sgd`), encodeTile(lat + 1, lon, values));
-      const fineMask = land.length ? rasterize(land, LINE_MASK) : null;
+      // Isobaths stop ~10–15 m short of the real coast (1 fine cell).
+      const fineMask = land.length ? dilate(rasterize(land, LINE_MASK), 1) : null;
       // Where EMODnet misplaces the coast, contours use depths interpolated
       // from the real coast (soundings above keep EMODnet's own values).
       const contourGrid = landMask ? fillCoastalGaps(native, landMask) : native;

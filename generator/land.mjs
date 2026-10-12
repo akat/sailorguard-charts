@@ -268,8 +268,89 @@ export function fillCoastalGaps(native, landMask, maxDistance = 8) {
   return filled;
 }
 
-/** Cut lines where they cross land, using a fine land mask (LINE_MASK_SCALE). */
-export function clipLines(lines, fineMask, tolerance) {
+/**
+ * Douglas–Peucker that never shortcuts over land: a run is replaced by one
+ * segment only when it stays within `tolerance` and that segment does not
+ * cross land (otherwise the run is split further).
+ */
+function simplifyOffLand(points, tolerance, crossesLand) {
+  if (points.length <= 2) {
+    return points.slice();
+  }
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  const tol2 = tolerance * tolerance;
+  while (stack.length) {
+    const [first, last] = stack.pop();
+    if (last - first < 2) {
+      continue;
+    }
+    const [ax, ay] = points[first];
+    const [bx, by] = points[last];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let worst = -1;
+    let worstDist = tol2;
+    for (let i = first + 1; i < last; i += 1) {
+      const [px, py] = points[i];
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+      const d2 = (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2;
+      if (d2 > worstDist) {
+        worstDist = d2;
+        worst = i;
+      }
+    }
+    if (worst < 0 && crossesLand(points[first], points[last])) {
+      worst = (first + last) >> 1;
+    }
+    if (worst >= 0) {
+      keep[worst] = 1;
+      stack.push([first, worst], [worst, last]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+/**
+ * Grow land in a fine mask (LINE_MASK_SCALE) by `cells` in every direction, so
+ * isobaths stop a little short of the coast instead of touching it: base maps
+ * draw coasts a few metres differently, and a line on the shore looks as if it
+ * ran under the land.
+ */
+export function dilate(mask, cells) {
+  const size = N * LINE_MASK_SCALE;
+  const rows = new Uint8Array(mask.length);
+  for (let r = 0; r < size; r += 1) {
+    const row = r * size;
+    for (let c = 0; c < size; c += 1) {
+      if (mask[row + c]) {
+        rows.fill(1, row + Math.max(0, c - cells), row + Math.min(size, c + cells + 1));
+      }
+    }
+  }
+  const out = new Uint8Array(mask.length);
+  for (let r = 0; r < size; r += 1) {
+    const row = r * size;
+    for (let c = 0; c < size; c += 1) {
+      if (rows[row + c]) {
+        for (let k = Math.max(0, r - cells); k <= Math.min(size - 1, r + cells); k += 1) {
+          out[k * size + c] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Cut lines where they cross land, using a fine land mask (LINE_MASK_SCALE).
+ * Pieces left shorter than `minPiece` grid units by a cut are dropped (stubs
+ * at the coast).
+ */
+export function clipLines(lines, fineMask, tolerance, minPiece = 0.5) {
   const size = N * LINE_MASK_SCALE;
   const onLand = ([x, y]) => {
     const col = Math.floor(x * LINE_MASK_SCALE);
@@ -277,12 +358,23 @@ export function clipLines(lines, fineMask, tolerance) {
     return row >= 0 && row < size && col >= 0 && col < size && fineMask[row * size + col] === 1;
   };
   const step = 1 / LINE_MASK_SCALE;
+  const crossesLand = (p, q) => {
+    const steps = Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / step);
+    for (let k = 1; k < steps; k += 1) {
+      if (onLand([p[0] + ((q[0] - p[0]) * k) / steps, p[1] + ((q[1] - p[1]) * k) / steps])) {
+        return true;
+      }
+    }
+    return false;
+  };
   const out = [];
   for (const line of lines) {
     let piece = [];
+    const pieces = [];
+    let cut = false;
     const finish = () => {
       if (piece.length > 1) {
-        out.push({depth: line.depth, points: simplify(piece, tolerance)});
+        pieces.push(simplifyOffLand(piece, tolerance, crossesLand));
       }
       piece = [];
     };
@@ -299,6 +391,7 @@ export function clipLines(lines, fineMask, tolerance) {
       }
       for (const s of samples) {
         if (onLand(s)) {
+          cut = true;
           finish();
         } else {
           piece.push(s);
@@ -306,8 +399,21 @@ export function clipLines(lines, fineMask, tolerance) {
       }
     }
     finish();
+    for (const points of pieces) {
+      if (!cut || polylineLength(points) >= minPiece) {
+        out.push({depth: line.depth, points});
+      }
+    }
   }
   return out;
+}
+
+function polylineLength(points) {
+  let length = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+  }
+  return length;
 }
 
 function ringBox(ring) {
