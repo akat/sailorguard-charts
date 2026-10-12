@@ -225,26 +225,40 @@ function ringBox(ring) {
   return {w, s, e, n};
 }
 
-/** Subtract land from depth areas; one area may split into several. */
+const boxesMeet = (a, b) => a.w <= b.e && a.e >= b.w && a.s <= b.n && a.n >= b.s;
+
+/**
+ * Subtract land from depth areas; one area may split into several. Areas of
+ * one depth never overlap, so all those touching land are clipped together in
+ * a single polygon operation per depth (one per area is ~50x slower).
+ */
 export function clipAreas(areas, land) {
   const landBoxes = land.map(polygon => ({polygon, box: ringBox(polygon[0])}));
   const out = [];
+  const byDepth = new Map();
   for (const area of areas) {
     const box = ringBox(area.rings[0]);
-    const near = landBoxes
-      .filter(l => l.box.w <= box.e && l.box.e >= box.w && l.box.s <= box.n && l.box.n >= box.s)
-      .map(l => l.polygon);
+    const near = landBoxes.filter(l => boxesMeet(l.box, box));
     if (!near.length) {
       out.push(area);
       continue;
     }
-    for (const rings of difference(area.rings, ...near)) {
+    if (!byDepth.has(area.depth)) {
+      byDepth.set(area.depth, {areas: [], land: new Set()});
+    }
+    const group = byDepth.get(area.depth);
+    group.areas.push(area.rings);
+    near.forEach(l => group.land.add(l.polygon));
+  }
+  for (const [depth, group] of byDepth) {
+    for (const rings of difference(group.areas, ...group.land)) {
       if (rings[0].length >= 4) {
-        out.push({depth: area.depth, rings});
+        out.push({depth, rings});
       }
     }
   }
-  return out;
+  // Deepest band first, so shallower bands are drawn on top.
+  return out.sort((a, b) => b.depth - a.depth);
 }
 
 export const LINE_MASK = LINE_MASK_SCALE;

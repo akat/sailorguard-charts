@@ -5,9 +5,10 @@
 //   node generator/build-tiles.mjs 23,37,25,39                 # or west,south,east,north
 //
 // One WCS request per 1° tile at native resolution (1/960°). Resumable: tiles
-// whose depth and contour files are both on disk, and tiles known to be land
-// only, are skipped. Run build-manifest.mjs afterwards.
-import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+// whose depth and contour files are both in this build's folder, and tiles
+// known to be land only, are skipped. Run build-manifest.mjs afterwards; until
+// then the served manifest keeps pointing at the previous build.
+import {existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {encodeTile, reduceTile, tileKey} from './tile-format.mjs';
@@ -16,14 +17,14 @@ import {buildContours} from './contours.mjs';
 import {encodeContours} from './contour-format.mjs';
 import {applyLandMask, clipAreas, clipLines, ensureLandIndex, LINE_MASK, landPaths, loadLand, rasterize} from './land.mjs';
 import {execFileSync} from 'node:child_process';
+import {buildDir} from './build-info.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = JSON.parse(readFileSync(join(ROOT, 'generator', 'regions.json'), 'utf8'));
-const TILE_DIR = join(ROOT, 'public', 'v1', 'tiles', CONFIG.dataset.id);
+const TILE_DIR = buildDir(ROOT, CONFIG.dataset);
+// Tiles with no water. The OSM coastline only ever adds land, so this list
+// stays valid across build versions.
 const EMPTY_FILE = join(ROOT, 'public', 'v1', 'land-tiles.json');
-// Per-tile build version: tiles built by an older pipeline are rebuilt.
-const BUILT_FILE = join(ROOT, 'public', 'v1', 'built-tiles.json');
-const BUILD_VERSION = 'osm-coast-smooth-2';
 // Downloads (OSM land polygons) and indexes; not served (nginx only serves /v1).
 const CACHE_DIR = join(ROOT, 'public', '.cache');
 const PAUSE_MS = 500; // be gentle with the EMODnet server
@@ -40,9 +41,13 @@ const CONTOUR_LEVELS = [
   {tolerance: 1.0, minArea: 16, minLength: 8, smooth: 2, smoothTolerance: 0.4},
   {tolerance: 0.15, minArea: 1, minLength: 2, smooth: 2, smoothTolerance: 0.1}
 ];
-const built = existsSync(BUILT_FILE) ? JSON.parse(readFileSync(BUILT_FILE, 'utf8')) : {};
-const isBuilt = key =>
-  built[key] === BUILD_VERSION && existsSync(join(TILE_DIR, `${key}.sgd`)) && existsSync(join(TILE_DIR, `${key}.sgc`));
+const isBuilt = key => existsSync(join(TILE_DIR, `${key}.sgd`)) && existsSync(join(TILE_DIR, `${key}.sgc`));
+
+/** Write via a temporary file, so a stopped build never leaves a truncated tile. */
+function writeAtomic(file, data) {
+  writeFileSync(`${file}.part`, data);
+  renameSync(`${file}.part`, file);
+}
 
 /** Download and unzip the OSM land polygons once (~930 MB). */
 async function ensureLandPolygons() {
@@ -65,6 +70,7 @@ async function ensureLandPolygons() {
   }
   console.log('Unzipping land polygons…');
   execFileSync('unzip', ['-o', '-q', paths.zip, '-d', CACHE_DIR]);
+  rmSync(paths.zip);
 }
 
 function parseAreas(args) {
@@ -119,7 +125,7 @@ async function worker() {
     }
     const values = reduceTile(native);
     if (values) {
-      writeFileSync(join(TILE_DIR, `${key}.sgd`), encodeTile(lat + 1, lon, values));
+      writeAtomic(join(TILE_DIR, `${key}.sgd`), encodeTile(lat + 1, lon, values));
       const fineMask = land.length ? rasterize(land, LINE_MASK) : null;
       const levels = CONTOUR_LEVELS.map(detail => {
         const contours = buildContours(native, detail);
@@ -132,9 +138,7 @@ async function worker() {
           areas: clipAreas(contours.areas, land)
         };
       });
-      writeFileSync(join(TILE_DIR, `${key}.sgc`), encodeContours(lat + 1, lon, levels));
-      built[key] = BUILD_VERSION;
-      writeFileSync(BUILT_FILE, JSON.stringify(built));
+      writeAtomic(join(TILE_DIR, `${key}.sgc`), encodeContours(lat + 1, lon, levels));
       written += 1;
     } else {
       landTiles.add(key);

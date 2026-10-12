@@ -7,16 +7,20 @@
 // `tiles` are the depth tiles (.sgd), `contours` the contour tiles (.sgc);
 // apps that predate contours ignore the latter.
 import {createHash} from 'node:crypto';
-import {readdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {dirname, join} from 'node:path';
+import {existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 import {parseKey, tilesInBbox} from './tile-format.mjs';
+import {buildDir, datasetDir} from './build-info.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = JSON.parse(readFileSync(join(ROOT, 'generator', 'regions.json'), 'utf8'));
 const V1 = join(ROOT, 'public', 'v1');
-const TILE_DIR = join(V1, 'tiles', CONFIG.dataset.id);
+const TILE_DIR = buildDir(ROOT, CONFIG.dataset);
+const MANIFEST = join(V1, 'manifest.json');
+// Path of the tile folder relative to /v1, as used in the URLs.
+const tilePath = relative(V1, TILE_DIR).split('\\').join('/');
 
 function listFiles(extension) {
   const files = {};
@@ -47,13 +51,31 @@ const manifest = {
   format: 'SGD2',
   version: new Date().toISOString(),
   dataset: CONFIG.dataset,
-  tileUrl: `tiles/${CONFIG.dataset.id}/{key}.sgd`,
+  tileUrl: `${tilePath}/{key}.sgd`,
   tiles,
-  contourUrl: `tiles/${CONFIG.dataset.id}/{key}.sgc`,
+  contourUrl: `${tilePath}/{key}.sgc`,
   contours,
   regions
 };
-writeFileSync(join(V1, 'manifest.json'), JSON.stringify(manifest));
+// The folder the served manifest points at: kept one more build, for apps that
+// fetched that manifest moments before this one replaces it.
+const previous = existsSync(MANIFEST) ? dirname(JSON.parse(readFileSync(MANIFEST, 'utf8')).tileUrl) : null;
+writeFileSync(`${MANIFEST}.part`, JSON.stringify(manifest));
+renameSync(`${MANIFEST}.part`, MANIFEST);
+
+// Remove older builds: folders of other versions, and the tiles of the first
+// builds, which sat directly in the dataset folder.
+const keep = new Set([tilePath, previous]);
+const root = datasetDir(ROOT, CONFIG.dataset);
+for (const name of readdirSync(root)) {
+  const path = join(root, name);
+  const isDir = statSync(path).isDirectory();
+  const folder = isDir ? relative(V1, path).split('\\').join('/') : relative(V1, root).split('\\').join('/');
+  if (!keep.has(folder)) {
+    rmSync(path, {recursive: true, force: true});
+  }
+}
+rmSync(join(V1, 'built-tiles.json'), {force: true}); // used by earlier builds
 const total = keys.reduce((sum, key) => sum + sizeOf(key), 0);
 console.log(
   `manifest: ${keys.length} depth tiles, ${Object.keys(contours).length} contour tiles (${(total / 1048576).toFixed(1)} MB), ${regions.length} regions`
